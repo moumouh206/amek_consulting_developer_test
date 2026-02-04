@@ -4,37 +4,40 @@ namespace App\Http\Controllers;
 
 use App\Models\Order;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
     public function index()
     {
-        // i removed the customer , items and latestCartItem loading because we were querying the db inside the loop.
-        // PS: i loaded latestCartItem be i'm assuming we added a latestCartItem hasOne relationship in the Order model.
-        $orders = Order::with(['customer', 'items', 'latestCartItem'])
-            ->orderBy('completed_at', 'desc') //I moved sorting to DB level for better performance , imaging having thousands of orders
+        // i loaded everything to stop the N+1 issues
+        // loading items.product just in case we neeed product details later
+        $orders = Order::with(['customer', 'items.product', 'cartItems' => function ($q) {
+                $q->orderByDesc('created_at');
+            }])
+            // pushing the math to the DB for better perforance
+            ->withSum('items as total_amount_raw', DB::raw('price * quantity'))
+            ->withCount('items as items_count')
+            ->orderByDesc('completed_at') // sorting here is better becasue of indexs
             ->get();
 
         $data = $orders->map(function ($o) {
-            
-            // calculate total in memory since items are loaded
-            $total = $o->items->sum(fn($i) => $i->price * $i->quantity);
-
             return [
-                'order_id'       => $o->id,
-                'customer_name'  => $o->customer->name ?? 'customer deleted ? or didn\'t input his name maybe',
-                'total_amount'   => $total,
-                'items_count'    => $o->items->count(),
+                'order_id'      => $o->id,
+                'customer_name' => $o->customer->name ?? 'N/A',
+                'total_amount'  => $o->total_amount_raw ?? 0,
+                'items_count'   => $o->items_count,
                 
-                // since we loaded latestCartItem relationship we can use it directly without querying again
-                'last_added_to_cart' => $o->latestCartItem?->created_at,
+                // since we are looking for the last one  we get the first one from the sorted relaionship
+                'last_added_to_cart' => $o->cartItems->first()?->created_at,
                 
-                // we don't need to fetch the object again since we have it from the first query, we just check the status
+                // imagien querying the DB again here... glad we just check status
                 'completed_order_exists' => $o->status === 'completed',
-                'created_at'     => $o->created_at,
+                'created_at'    => $o->created_at,
             ];
         });
 
+        // passing it to the view
         return view('orders.index', ['orders' => $data]);
     }
 }
